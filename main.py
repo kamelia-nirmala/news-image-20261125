@@ -1,9 +1,4 @@
-"""WORLD NEWS front page renderer.
-
-Pure standard-library image generation: a 1024x1024 RGB canvas drawn with
-solid rectangles, discs and triangles, a hand-rolled 5x7 bitmap font, and a
-minimal PNG encoder built on struct + zlib. Output is fully deterministic.
-"""
+"""Front-page news poster: 1024x1024 PNG, pure standard library."""
 
 import os
 import struct
@@ -14,9 +9,8 @@ H = 1024
 
 BG = (15, 27, 45)
 WHITE = (255, 255, 255)
-SIGNAL = (255, 212, 59)
+YELLOW = (255, 212, 59)
 
-# 5 wide x 7 tall glyphs. Each row is 5 bits, bit 4 = leftmost pixel.
 GLYPHS = {
     " ": (0b00000, 0b00000, 0b00000, 0b00000, 0b00000, 0b00000, 0b00000),
     "0": (0b01110, 0b10001, 0b10011, 0b10101, 0b11001, 0b10001, 0b01110),
@@ -37,7 +31,7 @@ GLYPHS = {
     "F": (0b11111, 0b10000, 0b10000, 0b11110, 0b10000, 0b10000, 0b10000),
     "G": (0b01110, 0b10001, 0b10000, 0b10111, 0b10001, 0b10001, 0b01111),
     "H": (0b10001, 0b10001, 0b10001, 0b11111, 0b10001, 0b10001, 0b10001),
-    "I": (0b01110, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0b01110),
+    "I": (0b11111, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0b11111),
     "J": (0b00111, 0b00010, 0b00010, 0b00010, 0b00010, 0b10010, 0b01100),
     "K": (0b10001, 0b10010, 0b10100, 0b11000, 0b10100, 0b10010, 0b10001),
     "L": (0b10000, 0b10000, 0b10000, 0b10000, 0b10000, 0b10000, 0b11111),
@@ -60,28 +54,13 @@ GLYPHS = {
     ".": (0b00000, 0b00000, 0b00000, 0b00000, 0b00000, 0b00110, 0b00110),
     "%": (0b11001, 0b11010, 0b00010, 0b00100, 0b01000, 0b01011, 0b10011),
     ":": (0b00000, 0b00110, 0b00110, 0b00000, 0b00110, 0b00110, 0b00000),
-    "/": (0b00001, 0b00010, 0b00010, 0b00100, 0b01000, 0b01000, 0b10000),
+    "/": (0b00001, 0b00001, 0b00010, 0b00100, 0b01000, 0b10000, 0b10000),
     "(": (0b00010, 0b00100, 0b01000, 0b01000, 0b01000, 0b00100, 0b00010),
     ")": (0b01000, 0b00100, 0b00010, 0b00010, 0b00010, 0b00100, 0b01000),
-    "'": (0b00100, 0b00100, 0b00000, 0b00000, 0b00000, 0b00000, 0b00000),
+    "'": (0b00100, 0b00100, 0b01000, 0b00000, 0b00000, 0b00000, 0b00000),
     "!": (0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0b00000, 0b00100),
     "?": (0b01110, 0b10001, 0b00001, 0b00010, 0b00100, 0b00000, 0b00100),
 }
-
-# Colour of pictogram cut-outs (window glass, chip core). Reassigned to the
-# panel colour before each icon so the holes read as negative space.
-_CUT = BG
-
-
-def _isqrt(n):
-    if n <= 0:
-        return 0
-    x = n
-    y = (x + 1) // 2
-    while y < x:
-        x = y
-        y = (x + n // x) // 2
-    return x
 
 
 def paint_rect(buf, x, y, w, h, rgb):
@@ -92,19 +71,18 @@ def paint_rect(buf, x, y, w, h, rgb):
     if x1 <= x0 or y1 <= y0:
         return
     row = bytes(rgb) * (x1 - x0)
-    span = len(row)
-    stride = W * 3
+    n = len(row)
     for yy in range(y0, y1):
-        off = yy * stride + x0 * 3
-        buf[off:off + span] = row
+        s = (yy * W + x0) * 3
+        buf[s:s + n] = row
 
 
 def paint_disc(buf, cx, cy, r, rgb):
-    if r < 1:
-        return
-    r2 = r * r
     for dy in range(-r, r + 1):
-        dx = _isqrt(r2 - dy * dy)
+        rem = r * r - dy * dy
+        dx = 0
+        while (dx + 1) * (dx + 1) <= rem:
+            dx += 1
         paint_rect(buf, cx - dx, cy + dy, 2 * dx + 1, 1, rgb)
 
 
@@ -113,29 +91,24 @@ def paint_tri(buf, x1, y1, x2, y2, x3, y3, rgb):
     maxx = min(W - 1, max(x1, x2, x3))
     miny = max(0, min(y1, y2, y3))
     maxy = min(H - 1, max(y1, y2, y3))
-    if maxx < minx or maxy < miny:
-        return
-    area = (x2 - x1) * (y3 - y1) - (x3 - x1) * (y2 - y1)
+    ax, ay = 2 * x1, 2 * y1
+    bx, by = 2 * x2, 2 * y2
+    cx, cy = 2 * x3, 2 * y3
+    area = (bx - ax) * (cy - ay) - (cx - ax) * (by - ay)
     if area == 0:
         return
-    sign = 1 if area > 0 else -1
-    stride = W * 3
-    for y in range(miny, maxy + 1):
-        base = y * stride
-        for x in range(minx, maxx + 1):
-            w0 = (x2 - x1) * (y - y1) - (x - x1) * (y2 - y1)
-            w1 = (x3 - x2) * (y - y2) - (x - x2) * (y3 - y2)
-            w2 = (x1 - x3) * (y - y3) - (x - x3) * (y1 - y3)
-            if w0 * sign >= 0 and w1 * sign >= 0 and w2 * sign >= 0:
-                off = base + x * 3
-                buf[off] = rgb[0]
-                buf[off + 1] = rgb[1]
-                buf[off + 2] = rgb[2]
+    for py in range(miny, maxy + 1):
+        Y = 2 * py + 1
+        for px in range(minx, maxx + 1):
+            X = 2 * px + 1
+            w0 = (bx - ax) * (Y - ay) - (X - ax) * (by - ay)
+            w1 = (cx - bx) * (Y - by) - (X - bx) * (cy - by)
+            w2 = (ax - cx) * (Y - cy) - (X - cx) * (ay - cy)
+            if (w0 >= 0 and w1 >= 0 and w2 >= 0) or (w0 <= 0 and w1 <= 0 and w2 <= 0):
+                paint_rect(buf, px, py, 1, 1, rgb)
 
 
 def measure_text(text, scale):
-    if not text:
-        return 0
     return len(text) * 6 * scale - scale
 
 
@@ -143,158 +116,118 @@ def paint_text(buf, x, y, text, scale, rgb):
     pen = x
     for ch in text:
         rows = GLYPHS[ch]
-        for ry in range(7):
-            bits = rows[ry]
-            col = 0
-            while col < 5:
-                if bits & (1 << (4 - col)):
-                    start = col
-                    while col < 5 and bits & (1 << (4 - col)):
-                        col += 1
-                    paint_rect(buf, pen + start * scale, y + ry * scale,
-                               (col - start) * scale, scale, rgb)
-                else:
-                    col += 1
+        for r in range(7):
+            bits = rows[r]
+            if not bits:
+                continue
+            for c in range(5):
+                if bits & (1 << (4 - c)):
+                    paint_rect(buf, pen + c * scale, y + r * scale, scale, scale, rgb)
         pen += 6 * scale
 
 
 def ico_rocket(buf, cx, cy):
-    paint_tri(buf, cx - 10, cy - 14, cx + 10, cy - 14, cx, cy - 44, SIGNAL)
-    paint_rect(buf, cx - 10, cy - 16, 20, 40, SIGNAL)
-    paint_tri(buf, cx - 10, cy + 2, cx - 10, cy + 26, cx - 28, cy + 30, SIGNAL)
-    paint_tri(buf, cx + 10, cy + 2, cx + 10, cy + 26, cx + 28, cy + 30, SIGNAL)
-    paint_disc(buf, cx, cy - 2, 8, SIGNAL)
-    paint_disc(buf, cx, cy - 2, 4, _CUT)
+    paint_rect(buf, cx - 13, cy - 16, 26, 50, YELLOW)
+    paint_tri(buf, cx - 13, cy - 16, cx + 13, cy - 16, cx, cy - 48, YELLOW)
+    paint_tri(buf, cx - 13, cy + 8, cx - 13, cy + 34, cx - 32, cy + 34, YELLOW)
+    paint_tri(buf, cx + 13, cy + 8, cx + 13, cy + 34, cx + 32, cy + 34, YELLOW)
+    paint_rect(buf, cx - 8, cy + 34, 16, 10, YELLOW)
+    paint_disc(buf, cx, cy - 2, 8, (31, 111, 235))
 
 
 def ico_scales(buf, cx, cy):
-    paint_rect(buf, cx - 3, cy - 36, 6, 66, SIGNAL)
-    paint_rect(buf, cx - 20, cy + 28, 40, 8, SIGNAL)
-    paint_rect(buf, cx - 38, cy - 36, 76, 6, SIGNAL)
-    paint_rect(buf, cx - 34, cy - 30, 4, 14, SIGNAL)
-    paint_rect(buf, cx + 30, cy - 30, 4, 14, SIGNAL)
-    paint_tri(buf, cx - 44, cy - 16, cx - 24, cy - 16, cx - 34, cy + 2, SIGNAL)
-    paint_tri(buf, cx + 24, cy - 16, cx + 44, cy - 16, cx + 34, cy + 2, SIGNAL)
+    paint_rect(buf, cx - 4, cy - 36, 8, 76, YELLOW)
+    paint_rect(buf, cx - 48, cy - 36, 96, 6, YELLOW)
+    paint_rect(buf, cx - 22, cy + 40, 44, 6, YELLOW)
+    paint_tri(buf, cx - 52, cy - 28, cx - 26, cy - 28, cx - 39, cy - 6, YELLOW)
+    paint_tri(buf, cx + 26, cy - 28, cx + 52, cy - 28, cx + 39, cy - 6, YELLOW)
 
 
-def ico_burst(buf, cx, cy):
-    paint_tri(buf, cx + 42, cy, cx + 16, cy - 9, cx + 16, cy + 9, SIGNAL)
-    paint_tri(buf, cx - 42, cy, cx - 16, cy - 9, cx - 16, cy + 9, SIGNAL)
-    paint_tri(buf, cx, cy - 42, cx - 9, cy - 16, cx + 9, cy - 16, SIGNAL)
-    paint_tri(buf, cx, cy + 42, cx - 9, cy + 16, cx + 9, cy + 16, SIGNAL)
-    paint_tri(buf, cx + 30, cy + 30, cx + 16, cy + 8, cx + 8, cy + 16, SIGNAL)
-    paint_tri(buf, cx - 30, cy + 30, cx - 16, cy + 8, cx - 8, cy + 16, SIGNAL)
-    paint_tri(buf, cx + 30, cy - 30, cx + 16, cy - 8, cx + 8, cy - 16, SIGNAL)
-    paint_tri(buf, cx - 30, cy - 30, cx - 16, cy - 8, cx - 8, cy - 16, SIGNAL)
-    paint_disc(buf, cx, cy, 9, SIGNAL)
+def ico_flag_spain(buf, cx, cy):
+    x = cx - 45
+    y = cy - 28
+    paint_rect(buf, x, y, 90, 14, (170, 21, 27))
+    paint_rect(buf, x, y + 14, 90, 28, (255, 196, 0))
+    paint_rect(buf, x, y + 42, 90, 14, (170, 21, 27))
 
 
-def ico_chip(buf, cx, cy):
-    paint_rect(buf, cx - 30, cy - 30, 60, 60, SIGNAL)
-    paint_rect(buf, cx - 16, cy - 16, 32, 32, _CUT)
-    paint_rect(buf, cx - 8, cy - 8, 16, 16, SIGNAL)
-    for k in range(4):
-        py = cy - 24 + k * 12
-        paint_rect(buf, cx - 42, py, 12, 5, SIGNAL)
-        paint_rect(buf, cx + 30, py, 12, 5, SIGNAL)
-        px = cx - 24 + k * 12
-        paint_rect(buf, px, cy - 42, 5, 12, SIGNAL)
-        paint_rect(buf, px, cy + 30, 5, 12, SIGNAL)
+def ico_flag_bangladesh(buf, cx, cy):
+    paint_rect(buf, cx - 45, cy - 28, 90, 56, (0, 106, 78))
+    paint_disc(buf, cx - 12, cy, 16, (244, 42, 65))
 
 
-def ico_plane(buf, cx, cy):
-    paint_rect(buf, cx - 38, cy - 5, 76, 10, SIGNAL)
-    paint_tri(buf, cx + 38, cy - 5, cx + 38, cy + 5, cx + 44, cy, SIGNAL)
-    paint_tri(buf, cx - 2, cy - 5, cx - 2, cy + 5, cx - 34, cy - 40, SIGNAL)
-    paint_tri(buf, cx - 2, cy - 5, cx - 2, cy + 5, cx - 34, cy + 40, SIGNAL)
-    paint_tri(buf, cx - 38, cy - 5, cx - 38, cy + 5, cx - 44, cy - 26, SIGNAL)
-    paint_tri(buf, cx - 38, cy - 5, cx - 38, cy + 5, cx - 44, cy + 26, SIGNAL)
+def ico_flag_colombia(buf, cx, cy):
+    x = cx - 45
+    y = cy - 28
+    paint_rect(buf, x, y, 90, 28, (252, 209, 22))
+    paint_rect(buf, x, y + 28, 90, 14, (0, 56, 147))
+    paint_rect(buf, x, y + 42, 90, 14, (206, 17, 38))
 
 
-def ico_ship(buf, cx, cy):
-    paint_tri(buf, cx - 42, cy + 8, cx + 42, cy + 8, cx + 24, cy + 34, SIGNAL)
-    paint_tri(buf, cx - 42, cy + 8, cx + 24, cy + 34, cx - 24, cy + 34, SIGNAL)
-    paint_rect(buf, cx - 30, cy + 2, 60, 8, SIGNAL)
-    paint_rect(buf, cx - 2, cy - 40, 4, 44, SIGNAL)
-    paint_tri(buf, cx + 4, cy - 38, cx + 4, cy - 6, cx + 30, cy - 6, SIGNAL)
-    paint_tri(buf, cx - 4, cy - 34, cx - 4, cy - 6, cx - 26, cy - 6, SIGNAL)
+def ico_flag_indonesia(buf, cx, cy):
+    x = cx - 45
+    y = cy - 28
+    paint_rect(buf, x, y, 90, 28, (255, 0, 0))
+    paint_rect(buf, x, y + 28, 90, 28, (255, 255, 255))
 
 
 PANELS = (
-    ((31, 111, 235), ico_rocket, ("SHENZHOU-24", "LAUNCHED 08:18", "FIRST FOREIGN")),
-    ((217, 72, 15), ico_scales, ("US TARIFF PLAN", "14 PARTNERS", "CHINA 20%")),
-    ((43, 138, 62), ico_burst, ("ISRAELI STRIKE", "HAMAS SECURITY", "CHIEF KILLED")),
-    ((134, 46, 156), ico_chip, ("BANGLADESH", "MIN WAGE UP 36%", "17,000 TAKA")),
-    ((194, 37, 92), ico_plane, ("CARTAGENA", "ALL HOSTAGES", "FREED IN RESCUE")),
-    ((11, 114, 133), ico_ship, ("INDONESIA MINE", "RESCUE, 9 DEAD", "17 TRAPPED")),
+    ((31, 111, 235), ico_rocket, ("CHINA LAUNCHES", "1ST FOREIGN", "ASTRONAUT")),
+    ((217, 72, 15), ico_scales, ("US PROPOSES NEW", "TARIFFS ON 14", "CHINA 20%")),
+    ((43, 138, 62), ico_flag_spain, ("PUIGDEMONT TO", "RETURN TO SPAIN", "ON DEC 12")),
+    ((134, 46, 156), ico_flag_bangladesh, ("BANGLADESH", "GARMENT PAY UP", "36% 17,000 TAKA")),
+    ((194, 37, 92), ico_flag_colombia, ("COLOMBIA FREES", "REMAINING", "HOSTAGES")),
+    ((11, 114, 133), ico_flag_indonesia, ("INDONESIA MINE", "FLOOD: 9 DEAD", "17 TRAPPED")),
 )
 
 PANEL_W = 492
 PANEL_H = 270
 COL_X = (16, 524)
 ROW_Y = (150, 436, 722)
-TEXT_X_OFF = 24
-TEXT_Y_OFF = 118
-LINE_STEP = 46
-TEXT_SCALE = 5
-MAX_LINE = 15
 
 
 def build():
-    global _CUT
-
     buf = bytearray(W * H * 3)
     paint_rect(buf, 0, 0, W, H, BG)
 
     paint_text(buf, 16, 28, "WORLD NEWS", 8, WHITE)
     paint_text(buf, 16, 88, "WEDNESDAY 25 NOVEMBER 2026", 5, WHITE)
 
-    for index, (color, icon, lines) in enumerate(PANELS):
-        px = COL_X[index % 2]
-        py = ROW_Y[index // 2]
-
+    for i, (color, icon, lines) in enumerate(PANELS):
+        px = COL_X[i % 2]
+        py = ROW_Y[i // 2]
         paint_rect(buf, px, py, PANEL_W, PANEL_H, color)
-
-        _CUT = color
         icon(buf, px + 246, py + 55)
-
-        for row, line in enumerate(lines):
-            assert len(line) <= MAX_LINE, "line %r exceeds %d chars" % (line, MAX_LINE)
+        for j, line in enumerate(lines):
             for ch in line:
-                assert ch in GLYPHS, "no glyph for %r in %r" % (ch, line)
-            width = measure_text(line, TEXT_SCALE)
-            assert width <= PANEL_W - TEXT_X_OFF, (
-                "line %r measures %dpx, panel allows %d"
-                % (line, width, PANEL_W - TEXT_X_OFF)
-            )
-            paint_text(buf, px + TEXT_X_OFF, py + TEXT_Y_OFF + row * LINE_STEP,
-                       line, TEXT_SCALE, WHITE)
+                assert ch in GLYPHS, "missing glyph for %r" % ch
+            assert measure_text(line, 5) <= PANEL_W - 24, "line too wide: %r" % line
+            paint_text(buf, px + 24, py + 118 + j * 46, line, 5, WHITE)
 
-    _CUT = BG
     return buf
 
 
 def _chunk(tag, data):
-    return (struct.pack(">I", len(data)) + tag + data
-            + struct.pack(">I", zlib.crc32(tag + data) & 0xFFFFFFFF))
+    return (
+        struct.pack(">I", len(data))
+        + tag
+        + data
+        + struct.pack(">I", zlib.crc32(tag + data) & 0xFFFFFFFF)
+    )
 
 
 def encode_png(path, buf):
+    raw = bytearray()
     stride = W * 3
-    raw = bytearray((stride + 1) * H)
     for y in range(H):
-        src = y * stride
-        dst = y * (stride + 1)
-        raw[dst] = 0
-        raw[dst + 1:dst + 1 + stride] = buf[src:src + stride]
-
+        raw.append(0)
+        raw += buf[y * stride:(y + 1) * stride]
     ihdr = struct.pack(">IIBBBBB", W, H, 8, 2, 0, 0, 0)
-    png = (b"\x89PNG\r\n\x1a\n"
-           + _chunk(b"IHDR", ihdr)
-           + _chunk(b"IDAT", zlib.compress(bytes(raw), 9))
-           + _chunk(b"IEND", b""))
-    with open(path, "wb") as handle:
-        handle.write(png)
+    with open(path, "wb") as f:
+        f.write(b"\x89PNG\r\n\x1a\n")
+        f.write(_chunk(b"IHDR", ihdr))
+        f.write(_chunk(b"IDAT", zlib.compress(bytes(raw), 9)))
+        f.write(_chunk(b"IEND", b""))
 
 
 def main():
